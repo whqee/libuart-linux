@@ -3,11 +3,14 @@ use std::io::{Read, Write};
 use uart_linux::{BaudRate, Uart};
 
 fn main() {
-    let mut uart = Uart::new_default_locked("/dev/ttyUSB2");
+    #[cfg(feature = "scan_sys_baudrate")]
+    uart_linux::BaudRate::test_sys_baudrate_config("/dev/ttyUSB0");
+
+    let mut uart = Uart::new_default_locked("/dev/ttyUSB1", uart_linux::Permission::RW);
 
     uart.baudrate = BaudRate::Baud4800;
 
-    uart.timeout_us = 1000;
+    uart.timeout_20us = 5000;
 
     uart.apply_settings();
 

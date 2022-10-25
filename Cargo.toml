@@ -1,9 +1,12 @@
 [package]
-name = "uart_linux"
+name = "uart-linux"
 version = "0.1.0"
 edition = "2021"
 description = "Uart library for linux based on libc"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libc = "0.2.135"
+libc = "0.2.136"
+
+[features]
+scan_sys_baudrate = []

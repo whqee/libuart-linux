@@ -5,13 +5,14 @@ use std::{
     ffi::OsStr,
     io::{self, Read, Write},
     mem::size_of,
-    os::fd::AsRawFd,
+    os::unix::io::AsRawFd,
     ptr::null,
 };
 
 use libc::c_void;
 
 #[allow(unused)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BaudRate {
     Baud0, // hang up
     Baud50,
@@ -48,41 +49,307 @@ pub enum BaudRate {
 
 #[allow(unused)]
 impl BaudRate {
-    fn speed(&self) -> u32 {
+    fn speed_flag(&self) -> u32 {
         match self {
             // c_cflag bit meaning
             BaudRate::Baud0 => 0000000, // hang up
-            BaudRate::Baud50 => 0000001,
-            BaudRate::Baud75 => 0000002,
-            BaudRate::Baud110 => 0000003,
-            BaudRate::Baud134 => 0000004,
-            BaudRate::Baud150 => 0000005,
-            BaudRate::Baud200 => 0000006,
-            BaudRate::Baud300 => 0000007,
-            BaudRate::Baud600 => 0000010,
-            BaudRate::Baud1200 => 0000011,
-            BaudRate::Baud1800 => 0000012,
-            BaudRate::Baud2400 => 0000013,
-            BaudRate::Baud4800 => 0000014,
-            BaudRate::Baud9600 => 0000015,
-            BaudRate::Baud19200 => 0000016,
-            BaudRate::Baud38400 => 0000017,
-            BaudRate::Baud57600 => 0010001,
-            BaudRate::Baud115200 => 0010002,
-            BaudRate::Baud230400 => 0010003,
-            BaudRate::Baud460800 => 0010004,
-            BaudRate::Baud500000 => 0010005,
-            BaudRate::Baud576000 => 0010006,
-            BaudRate::Baud921600 => 0010007,
-            BaudRate::Baud1000000 => 0010010,
-            BaudRate::Baud1152000 => 0010011,
-            BaudRate::Baud1500000 => 0010012,
-            BaudRate::Baud2000000 => 0010013,
-            BaudRate::Baud2500000 => 0010014,
-            BaudRate::Baud3000000 => 0010015,
-            BaudRate::Baud3500000 => 0010016,
-            BaudRate::Baud4000000 => 0010017,
+            BaudRate::Baud50 => 1,
+            BaudRate::Baud75 => 2,
+            BaudRate::Baud110 => 3,
+            BaudRate::Baud134 => 4,
+            BaudRate::Baud150 => 5,
+            BaudRate::Baud200 => 6,
+            BaudRate::Baud300 => 7,
+            BaudRate::Baud600 => 8,
+            BaudRate::Baud1200 => 9,
+            BaudRate::Baud1800 => 10,
+            BaudRate::Baud2400 => 11,
+            BaudRate::Baud4800 => 12,
+            BaudRate::Baud9600 => 13,
+            BaudRate::Baud19200 => 14,
+            BaudRate::Baud38400 => 15,
+            BaudRate::Baud57600 => 4097,
+            BaudRate::Baud115200 => 4098,
+            BaudRate::Baud230400 => 4099,
+            BaudRate::Baud460800 => 4100,
+            BaudRate::Baud500000 => 4101,
+            BaudRate::Baud576000 => 4102,
+            BaudRate::Baud921600 => 4103,
+            BaudRate::Baud1000000 => 4104,
+            BaudRate::Baud1152000 => 4105,
+            BaudRate::Baud1500000 => 4106,
+            BaudRate::Baud2000000 => 4107,
+            BaudRate::Baud2500000 => 4108,
+            BaudRate::Baud3000000 => 4109,
+            BaudRate::Baud3500000 => 4110,
+            BaudRate::Baud4000000 => 4111,
         }
+    }
+
+    #[cfg(feature = "scan_sys_baudrate")]
+    pub fn test_sys_baudrate_config(uart_path: &str) {
+        let mut file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&OsStr::new(uart_path))
+            .unwrap();
+
+        let mut options = libc::termios {
+            c_iflag: 0,
+            c_oflag: 0,
+            c_cflag: 0,
+            c_lflag: 0,
+            c_line: 0,
+            c_cc: [0; 32],
+            c_ispeed: 0,
+            c_ospeed: 0,
+        };
+
+        // try getting termios attributes and checking if we can setup the uart
+        if unsafe { libc::tcgetattr(file.as_raw_fd(), &mut options) } != 0 {
+            panic!("Failed to setup serial: {}", io::Error::last_os_error())
+        }
+
+        // tells linux kernel to set uart speed
+        unsafe {
+            // ispeed
+            libc::cfsetispeed(&mut options, 0);
+            // ospeed
+            libc::cfsetospeed(&mut options, 0);
+        }
+        // apply the termios's config
+        if unsafe { libc::tcsetattr(file.as_raw_fd(), libc::TCSANOW, &mut options) } != 0 {
+            panic!(
+                "Error occurs when setup serial, tried to get cause: {}",
+                io::Error::last_os_error()
+            )
+        }
+        let mut last_sys_baud = 0;
+
+        for i in 0..0xFFFFFFF {
+            // tells linux kernel to set uart speed
+            unsafe {
+                // ispeed
+                libc::cfsetispeed(&mut options, i);
+                // ospeed
+                libc::cfsetospeed(&mut options, i);
+            }
+            // apply the termios's config
+            if unsafe { libc::tcsetattr(file.as_raw_fd(), libc::TCSANOW, &mut options) } != 0 {
+                panic!(
+                    "Error occurs when setup serial, tried to get cause: {}",
+                    io::Error::last_os_error()
+                )
+            }
+            let baud = Self::get_real_baudrate(uart_path).parse().unwrap();
+            match baud {
+                0 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud0 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                50 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud50 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                75 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud75 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                110 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud110 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                134 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud134 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                150 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud150 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                200 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud200 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                300 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud300 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                600 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud600 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                1200 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud1200 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                1800 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud1800 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                2400 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud2400 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                4800 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud4800 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                9600 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud9600 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                19200 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud19200 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                38400 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud38400 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                57600 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud57600 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                115200 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud115200 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                230400 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud230400 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                460800 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud460800 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                500000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud500000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                576000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud576000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                921600 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud921600 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                1000000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud1000000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                1152000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud1152000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                1500000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud1500000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                2000000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud2000000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                2500000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud2500000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                3000000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud3000000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                3500000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud3500000 => {},", i);
+                        last_sys_baud = baud;
+                    }
+                }
+                4000000 => {
+                    if baud != last_sys_baud {
+                        println!("BaudRate::Baud4000000 => {},", i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        println!("done.");
+    }
+
+    fn get_real_baudrate(dev: &str) -> String {
+        use std::process::Command;
+        let mut cmd = String::from("stty -F ");
+        cmd.push_str(dev);
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .expect("命令执行异常错误提示");
+        let output = String::from_utf8(output.stdout).unwrap();
+        let output = output.split_whitespace();
+        let mut iter = output.into_iter();
+        let _ = iter.next();
+        let speed = iter.next();
+        speed.unwrap().into()
     }
 }
 
@@ -116,17 +383,17 @@ pub enum Parity {
 }
 
 ///
-/// # Example
+/// # Example: Self loop test
 /// ```
 /// use std::io::{Read, Write};
 ///
 /// use uart_linux::{BaudRate, Uart};
 ///
-/// let mut uart = Uart::new_default_locked("/dev/ttyUSB2");
+/// let mut uart = Uart::new_default_locked("/dev/ttyUSB0", uart_linux::Permission::RW);
 ///
 /// uart.baudrate = BaudRate::Baud4800;
 ///
-/// uart.timeout_us = 1000;
+/// uart.timeout_20us = 5000; // 120ms
 ///
 /// uart.apply_settings();
 ///
@@ -159,7 +426,8 @@ pub struct Uart {
     pub stopbits: StopBits,
     pub parity: Parity,
     pub rs232_485: Option<RS232_485>,
-    pub timeout_us: i64,
+    pub timeout_s: i64,
+    pub timeout_20us: i64,
 
     /// effects in blocking mode, block to read at least 'vmin' bytes
     pub vmin: u8,
@@ -173,20 +441,41 @@ pub struct RS232_485 {
     pub ops_before_write: fn() -> io::Result<()>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Permission {
+    RO,
+    WO,
+    RW,
+}
+
 impl Uart {
     #[inline]
     ///
-    /// default to lock the serial device
+    /// default to lock the serial device with RW Permission
     ///
-    pub fn new_default_locked(path: &str) -> Uart {
-        Self::new_default(path, true)
+    pub fn new_default_locked(path: &str, rw: Permission) -> Uart {
+        Self::__new_default(path, true, rw)
     }
 
     #[inline]
-    pub fn new_default(path: &str, lock_it: bool) -> Uart {
+    /// unlock, read write
+    pub fn new_default(path: &str, rw: Permission) -> Uart {
+        Self::__new_default(path, false, rw)
+    }
+
+    fn __new_default(path: &str, lock_it: bool, rw: Permission) -> Uart {
+        let mut r = true;
+        let mut w = true;
+
+        match rw {
+            Permission::RO => w = false,
+            Permission::WO => r = false,
+            Permission::RW => {}
+        }
+
         let mut file = std::fs::File::options()
-            .read(true)
-            .write(true)
+            .read(r)
+            .write(w)
             .open(&OsStr::new(path))
             .unwrap();
 
@@ -214,7 +503,8 @@ impl Uart {
             stopbits: StopBits::StopBits1,
             parity: Parity::ParityNone,
             rs232_485: None,
-            timeout_us: 1200,
+            timeout_s: 0,
+            timeout_20us: 5000, // 100ms
             vmin: 0,
             // lock_the_uart: true,
             // vtime: 12, // 1200us
@@ -241,9 +531,9 @@ impl Uart {
         // tells linux kernel to set uart speed
         unsafe {
             // ispeed
-            libc::cfsetispeed(&mut options, self.baudrate.speed());
+            libc::cfsetispeed(&mut options, self.baudrate.speed_flag());
             // ospeed
-            libc::cfsetospeed(&mut options, self.baudrate.speed());
+            libc::cfsetospeed(&mut options, self.baudrate.speed_flag());
         }
 
         // set c_cflag with "serial not occupied"
@@ -329,7 +619,7 @@ impl Uart {
 
     /// read bytes with timeout, "len to be read" = buf.len()
     /// because timeout (by vtime::u8) is too short for uart, we use 'select() + read()' instead
-    fn read_bytes(&self, buf: &mut [u8], timeout_us: i64) -> io::Result<usize> {
+    fn __read_bytes(&self, buf: &mut [u8], timeout_s: i64, timeout_20us: i64) -> io::Result<usize> {
         if buf.len() == 0 {
             println!("buf.len == 0, return directly");
             return Ok(0);
@@ -344,8 +634,8 @@ impl Uart {
 
         // struct time_info for select()
         let mut time_info = libc::timeval {
-            tv_sec: 0,
-            tv_usec: timeout_us,
+            tv_sec: timeout_s,
+            tv_usec: timeout_20us,
         };
 
         let _fs_sel = unsafe {
@@ -368,6 +658,17 @@ impl Uart {
             Ok(len as usize)
         }
     }
+
+    // fn read_exact(&self, buf: &mut [u8]) -> io::Result<()> {
+    //     for i in 0..buf.len() {
+    //         self.__read_bytes(
+    //             &mut unsafe { *(&mut buf[i] as *mut u8 as *mut [u8; 1]) },
+    //             self.timeout_s,
+    //             self.timeout_20us,
+    //         )?;
+    //     }
+    //     Ok(())
+    // }
 }
 
 impl Write for Uart {
@@ -390,12 +691,17 @@ impl Read for Uart {
         }
 
         // timeout by vtime(u8) is too short for uart, we use 'select + read' instead
-        self.read_bytes(buf, self.timeout_us * buf.len() as i64)
+        self.__read_bytes(buf, self.timeout_s, self.timeout_20us * buf.len() as i64)
     }
 }
 
-// No tests here. See examples/test_uart
-//
+// impl Drop for Uart {
+//     fn drop(&mut self) {
+//         println!("[DebugInfo] Droped Uart")
+//     }
+// }
+
+// No tests here. See examples/self_loop.rs
 // #[cfg(test)]
 // mod tests {
 //     use super::*;
